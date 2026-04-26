@@ -132,21 +132,23 @@ const totalSlots = currentTotalSlots().toString();
         top: 0;
         width: var(--slot-w);
         height: var(--slot-h);
-        background: #111;
-        border-radius: 4px;
+        /* Subtle per-slot tint — set from JS via --slot-hue. */
+        background-color: hsl(var(--slot-hue, 220), 12%, 16%);
+        /* Profile-picture silhouette as background. Lives behind the <img>;
+           visible until a real face loads (or forever, if the backend isn't
+           configured). */
+        background-image: url("data:image/svg+xml;utf8,\
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'>\
+<circle cx='100' cy='78' r='32' fill='%23ffffff' fill-opacity='0.10'/>\
+<path d='M40 200c0-36 27-62 60-62s60 26 60 62z' fill='%23ffffff' fill-opacity='0.10'/>\
+</svg>");
+        background-size: 100% 100%;
+        background-position: center;
+        background-repeat: no-repeat;
+        border-radius: 6px;
         overflow: hidden;
         contain: layout paint;
-      }
-      .slot.empty::after {
-        content: "";
-        position: absolute;
-        inset: 0;
-        background: repeating-linear-gradient(
-          45deg,
-          #0c0c0c 0 8px,
-          #111 8px 16px
-        );
-        opacity: 0.6;
+        box-shadow: inset 0 0 0 1px hsl(var(--slot-hue, 220), 12%, 22%);
       }
       .slot img {
         width: 100%;
@@ -243,8 +245,10 @@ const totalSlots = currentTotalSlots().toString();
       dialog button[disabled] { opacity: 0.5; cursor: not-allowed; }
     </style>
 
-    <script type="module" src="/src/scripts/carousel.ts"></script>
-    <script type="module" src="/src/scripts/counter.ts"></script>
-    <script type="module" src="/src/scripts/selfie.ts"></script>
+    <script>
+      import "../scripts/carousel";
+      import "../scripts/counter";
+      import "../scripts/selfie";
+    </script>
   </body>
 </html>

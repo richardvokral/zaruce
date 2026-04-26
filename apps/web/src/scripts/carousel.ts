@@ -84,12 +84,23 @@ function ensurePoolSize(n: number) {
   }
 }
 
+/**
+ * Deterministic per-slot hue. Spreads the silhouette tints across the
+ * color wheel using the golden-angle increment (137.508°), which gives
+ * visually pleasing, non-repeating distribution for sequential indices.
+ */
+function slotHue(index: bigint): number {
+  // Modulo on bigint then to number — keeps precision well past 2^53.
+  return Number((index * 137n) % 360n);
+}
+
 function setSlotImage(el: HTMLDivElement, index: bigint) {
   const id = index.toString();
   if (el.dataset.index === id) return;
   el.dataset.index = id;
-  el.setAttribute("aria-label", `AI-generated face at position ${id}`);
+  el.setAttribute("aria-label", `Slot ${id}`);
   el.classList.toggle("you", assignedIndex !== null && index === assignedIndex);
+  el.style.setProperty("--slot-hue", String(slotHue(index)));
 
   // Drop existing children and start fresh.
   el.replaceChildren();
@@ -100,10 +111,9 @@ function setSlotImage(el: HTMLDivElement, index: bigint) {
   img.alt = "";
   img.src = `${FACE_BASE}/${id}.jpg`;
   img.addEventListener("load", () => img.classList.add("loaded"), { once: true });
-  img.addEventListener("error", () => {
-    // Empty slot, keep the placeholder pattern.
-    el.classList.add("empty");
-  }, { once: true });
+  // On error we leave the silhouette + tinted background visible — no extra
+  // styling required. Production behavior: a 404 here means "no face yet
+  // generated" which is the expected state for ~7.999B slots out of 8B.
   el.appendChild(img);
 }
 
@@ -149,7 +159,6 @@ function render() {
       }
       el = slotPool[poolCursor++] ?? slotPool[0]!;
     }
-    el.classList.remove("empty");
     setSlotImage(el, BigInt(id));
     mountedByIndex.set(id, el);
   }
