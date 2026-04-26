@@ -201,7 +201,6 @@ def _check_admin(authorization: Optional[str]) -> None:
 def admin_status(authorization: Optional[str] = None):
     """Bucket coverage report. Useful both as a CLI sanity check and as a
     lightweight dashboard endpoint."""
-    from fastapi import Header
     _check_admin(authorization)
 
     lookup_path = "/lookup/bucket_seeds.json"
