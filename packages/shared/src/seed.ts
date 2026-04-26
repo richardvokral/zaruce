@@ -23,7 +23,7 @@ async function hmacSha256(salt: string, data: Uint8Array): Promise<Uint8Array> {
     false,
     ["sign"],
   );
-  const sig = await crypto.subtle.sign("HMAC", key, data);
+  const sig = await crypto.subtle.sign("HMAC", key, data as BufferSource);
   return new Uint8Array(sig);
 }
 
