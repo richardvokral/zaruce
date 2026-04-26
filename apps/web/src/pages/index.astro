@@ -1,0 +1,250 @@
+---
+import { currentTotalSlots } from "@zaruce/shared";
+
+const title = "Everyone — 8 Billion Faces";
+const description =
+  "One AI-generated face for every person on Earth. Most slots are still empty. Yours is somewhere in here.";
+
+// Recompute on every render. The function is monotonic in time and pure;
+// no DB lookup needed. Vercel's CDN caches the response per-URL anyway.
+const totalSlots = currentTotalSlots().toString();
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#000000" />
+    <meta name="description" content={description} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>{title}</title>
+    <style is:global>
+      :root {
+        color-scheme: dark;
+        --bg: #050505;
+        --fg: #f4f4f4;
+        --muted: #888;
+        --accent: #f5d340;
+        --slot-w: 200px;
+        --slot-h: 200px;
+        --gap: 8px;
+      }
+      @media (max-width: 640px) {
+        :root {
+          --slot-w: 140px;
+          --slot-h: 140px;
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+        overflow: hidden;
+        overscroll-behavior: none;
+      }
+      body { touch-action: none; }
+    </style>
+  </head>
+  <body>
+    <main id="stage" data-total-slots={totalSlots}>
+      <div id="carousel" aria-label="Carousel of 8 billion faces" role="region">
+        <div id="track"></div>
+      </div>
+
+      <div id="counter" aria-live="polite" aria-atomic="true">
+        <span id="counter-occupied">—</span>
+        <span class="sep">/</span>
+        <span id="counter-total" data-total={totalSlots}>
+          {new Intl.NumberFormat("en-US").format(BigInt(totalSlots))}
+        </span>
+      </div>
+
+      <button id="cta" type="button" hidden>find your face</button>
+
+      <div id="position" hidden>
+        <span class="label">your slot</span>
+        <span id="position-index">—</span>
+      </div>
+    </main>
+
+    <dialog id="selfie-dialog" aria-labelledby="selfie-title">
+      <form method="dialog">
+        <h2 id="selfie-title">use your selfie as inspiration</h2>
+        <p>
+          Your selfie never leaves this device. We extract a handful of generic
+          attributes locally and send only those. The face you'll receive is
+          fictional — it shares some <em>vibe</em> with you, but it is not your
+          portrait.
+        </p>
+        <input id="selfie-input" type="file" accept="image/*" capture="user" />
+        <div id="selfie-preview" hidden>
+          <p>About to send these attributes:</p>
+          <ul id="selfie-attrs"></ul>
+        </div>
+        <menu>
+          <button value="cancel" type="submit">cancel</button>
+          <button id="selfie-confirm" value="confirm" type="submit" disabled>
+            generate my face
+          </button>
+        </menu>
+      </form>
+    </dialog>
+
+    <noscript>
+      <p style="padding:2rem">This experience needs JavaScript. It is one
+      static page that renders eight billion picture frames.</p>
+    </noscript>
+
+    <style>
+      #stage {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+      }
+      #carousel {
+        position: relative;
+        width: 100vw;
+        height: 100vh;
+        overflow: hidden;
+        cursor: grab;
+      }
+      #carousel.dragging { cursor: grabbing; }
+      #track {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        height: var(--slot-h);
+        transform: translate3d(0, -50%, 0);
+        will-change: transform;
+      }
+      .slot {
+        position: absolute;
+        top: 0;
+        width: var(--slot-w);
+        height: var(--slot-h);
+        background: #111;
+        border-radius: 4px;
+        overflow: hidden;
+        contain: layout paint;
+      }
+      .slot.empty::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: repeating-linear-gradient(
+          45deg,
+          #0c0c0c 0 8px,
+          #111 8px 16px
+        );
+        opacity: 0.6;
+      }
+      .slot img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+        opacity: 0;
+        transition: opacity 320ms ease;
+      }
+      .slot img.loaded { opacity: 1; }
+      .slot.you {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+        animation: pulse 1.6s ease-out 1;
+      }
+      @keyframes pulse {
+        0% { box-shadow: 0 0 0 0 rgba(245, 211, 64, 0.6); }
+        100% { box-shadow: 0 0 0 32px rgba(245, 211, 64, 0); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .slot img { transition: none; }
+        .slot.you { animation: none; }
+      }
+
+      #counter {
+        position: fixed;
+        top: 16px;
+        left: 16px;
+        font-variant-numeric: tabular-nums;
+        font-size: 12px;
+        color: var(--muted);
+        letter-spacing: 0.04em;
+        user-select: none;
+      }
+      #counter .sep { padding: 0 4px; opacity: 0.5; }
+      #counter-occupied { color: var(--fg); }
+
+      #cta {
+        position: fixed;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: var(--fg);
+        color: var(--bg);
+        border: 0;
+        padding: 12px 18px;
+        border-radius: 999px;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+        letter-spacing: 0.02em;
+      }
+      #cta:hover { background: var(--accent); }
+
+      #position {
+        position: fixed;
+        top: 16px;
+        right: 16px;
+        font-size: 12px;
+        color: var(--muted);
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      #position .label {
+        display: block;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 10px;
+      }
+      #position-index { color: var(--accent); font-weight: 600; }
+
+      dialog#selfie-dialog {
+        max-width: 440px;
+        background: #0c0c0c;
+        color: var(--fg);
+        border: 1px solid #222;
+        border-radius: 8px;
+        padding: 24px;
+      }
+      dialog::backdrop { background: rgba(0,0,0,0.7); }
+      dialog h2 { margin: 0 0 12px; font-size: 18px; }
+      dialog p { color: var(--muted); font-size: 14px; line-height: 1.5; }
+      dialog ul { padding-left: 18px; font-size: 13px; }
+      dialog menu {
+        display: flex; gap: 8px; justify-content: flex-end;
+        padding: 0; margin: 16px 0 0;
+      }
+      dialog button {
+        background: transparent; color: var(--fg);
+        border: 1px solid #333; padding: 8px 14px;
+        border-radius: 4px; cursor: pointer; font: inherit;
+      }
+      dialog button[value="confirm"] { background: var(--accent); color: #000; border-color: var(--accent); }
+      dialog button[disabled] { opacity: 0.5; cursor: not-allowed; }
+    </style>
+
+    <script type="module" src="/src/scripts/carousel.ts"></script>
+    <script type="module" src="/src/scripts/counter.ts"></script>
+    <script type="module" src="/src/scripts/selfie.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,23 @@
+{
+  "name": "@zaruce/web",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "typecheck": "astro check"
+  },
+  "dependencies": {
+    "@astrojs/vercel": "^7.8.0",
+    "@neondatabase/serverless": "^0.10.0",
+    "@upstash/redis": "^1.34.0",
+    "@zaruce/shared": "workspace:*",
+    "astro": "^4.16.0"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.4",
+    "typescript": "^5.6.0"
+  }
+}

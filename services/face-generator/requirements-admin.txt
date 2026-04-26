@@ -1,0 +1,6 @@
+# Admin CLI dependencies. Run with:
+#   pip install -r requirements-admin.txt
+# Modal runtime image deps live in main.py's image definition.
+click>=8.1
+requests>=2.31
+modal>=0.66
