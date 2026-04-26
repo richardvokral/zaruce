@@ -1,4 +1,5 @@
 import type { APIRoute } from "astro";
+import { currentTotalSlots } from "@zaruce/shared";
 import { getDb } from "../../../server/db";
 
 export const prerender = false;
@@ -119,32 +120,62 @@ async function probeModalAdmin(base: string, token: string, timeoutMs: number) {
   }
 }
 
-async function probeFaceRedirect(origin: string, slot: number, timeoutMs: number) {
-  const url = `${origin}/api/face/${slot}.jpg`;
-  try {
-    const { res, elapsedMs } = await fetchWithTimeout(url, { redirect: "manual" }, timeoutMs);
-    return {
-      ok: res.status === 302,
-      status: res.status,
-      location: res.headers.get("location") ?? "",
-      cacheControl: res.headers.get("cache-control") ?? "",
-      elapsedMs,
-    };
-  } catch (err) {
-    return { ok: false, error: (err as Error).message };
+/**
+ * Replicate the /api/face/<id> redirect logic locally instead of HTTP-calling
+ * our own deployment. Vercel serverless self-fetches sometimes fail with a
+ * generic "fetch failed" at the runtime level (SSL/edge timing), which would
+ * mask the real config we're trying to inspect.
+ */
+function probeFaceRedirect(slot: number, modalFaceBase: string) {
+  const total = currentTotalSlots();
+  if (slot < 0 || BigInt(slot) >= total) {
+    return { ok: false, status: 404, reason: "slot out of range", computed: true };
   }
+  const base = modalFaceBase.replace(/\/$/, "");
+  if (!base) {
+    return { ok: false, status: 503, reason: "MODAL_FACE_BASE not set", computed: true };
+  }
+  return {
+    ok: true,
+    status: 302,
+    location: `${base}/?slot=${slot}`,
+    cacheControl: "public, max-age=31536000, immutable",
+    computed: true,
+    note: "Computed from MODAL_FACE_BASE + slot (matches /api/face/[id].ts logic). Self-fetch was skipped to avoid Vercel runtime self-call quirks.",
+  };
 }
 
-async function probeLocalCounter(origin: string, timeoutMs: number) {
-  const url = `${origin}/api/counter`;
+/**
+ * Replicate the /api/counter logic against the same DB so we report on the
+ * same data path without an HTTP self-call.
+ */
+async function probeCounterLocal(timeoutMs: number) {
+  const total = currentTotalSlots().toString();
+  const sql = getDb();
+  if (!sql) {
+    return {
+      ok: true,
+      computed: true,
+      body: { occupied: "0", total },
+      note: "DATABASE_URL not set; matches the production fall-through behavior in /api/counter.ts",
+    };
+  }
+  const start = Date.now();
   try {
-    const { res, elapsedMs } = await fetchWithTimeout(url, { cache: "no-store" } as RequestInit, timeoutMs);
-    const text = await res.text();
-    let parsed: unknown = null;
-    try { parsed = JSON.parse(text); } catch { /* */ }
-    return { ok: res.ok, status: res.status, elapsedMs, body: parsed ?? text.slice(0, 200) };
+    const rows = await Promise.race([
+      sql`SELECT occupied FROM slot_counter WHERE id = 1` as Promise<Array<{ occupied: string }>>,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`counter query timeout after ${timeoutMs}ms`)), timeoutMs),
+      ),
+    ]);
+    return {
+      ok: true,
+      computed: true,
+      elapsedMs: Date.now() - start,
+      body: { occupied: rows[0]?.occupied ?? "0", total },
+    };
   } catch (err) {
-    return { ok: false, error: (err as Error).message };
+    return { ok: false, computed: true, elapsedMs: Date.now() - start, error: (err as Error).message };
   }
 }
 
@@ -218,11 +249,11 @@ export const POST: APIRoute = async ({ request, url }) => {
   // Run probes in parallel but each guarded by its own timeout. Promise.allSettled
   // ensures one probe failing doesn't lose the others.
   const settled = await Promise.allSettled([
-    timed("faceRedirect", () => probeFaceRedirect(origin, slot, probeTimeoutMs), log),
+    timed("faceRedirect", async () => probeFaceRedirect(slot, modalFaceBase), log),
     timed("modalFace", () => probeModalFace(modalFaceBase, slot, probeTimeoutMs), log),
     timed("modalAdmin", () => probeModalAdmin(modalAdminBase, expected, probeTimeoutMs), log),
     timed("db", () => probeDb(probeTimeoutMs), log),
-    timed("counter", () => probeLocalCounter(origin, probeTimeoutMs), log),
+    timed("counter", () => probeCounterLocal(probeTimeoutMs), log),
   ]);
 
   const get = <T>(i: number, fallback: T): T =>
