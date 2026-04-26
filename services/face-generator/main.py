@@ -85,8 +85,13 @@ def _pick_seed_from_bucket(index: int, seeds: list[int], salt: str) -> int:
     gpu="A10G",
     volumes={"/weights": weights_volume, "/lookup": lookup_volume},
     secrets=[modal.Secret.from_name("zaruce-secrets")],
-    scaledown_window=120,
+    # Keep a warm GPU container around for ten minutes after the last request
+    # so adjacent slot views (carousel scroll) don't each pay a cold-start.
+    scaledown_window=600,
     min_containers=0,
+    # First call has to download ~300 MB of StyleGAN3 weights from NVIDIA into
+    # the volume and load the model into VRAM. Default 300 s isn't enough.
+    timeout=1800,
 )
 class FaceGenerator:
     @modal.enter()
@@ -158,6 +163,10 @@ class FaceGenerator:
     image=image,
     volumes={"/weights": weights_volume, "/lookup": lookup_volume},
     secrets=[modal.Secret.from_name("zaruce-secrets")],
+    # The HTTP request stays open while we wait for the GPU class to spin up
+    # and produce the JPEG. Default 300 s expires before a cold first-deploy
+    # finishes weight download + model load.
+    timeout=900,
 )
 @modal.fastapi_endpoint(method="GET", label="face")
 def face_endpoint(slot: int, bucket: Optional[int] = None):
