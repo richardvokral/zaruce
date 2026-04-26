@@ -104,7 +104,13 @@ const totalSlots = currentTotalSlots().toString();
       static page that renders eight billion picture frames.</p>
     </noscript>
 
-    <style>
+    <style is:global>
+      /* This block is intentionally global: the .slot divs are created at
+         runtime by carousel.ts via document.createElement, so Astro's scoped
+         attribute selectors would never match them and the slots would render
+         with zero width/height (invisible). Keeping the whole block global is
+         safe because every selector here targets unique IDs or carousel-only
+         classes that don't exist elsewhere on the site. */
       #stage {
         position: fixed;
         inset: 0;
