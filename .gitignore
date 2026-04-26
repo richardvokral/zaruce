@@ -40,3 +40,4 @@ pnpm-debug.log*
 *.safetensors
 services/face-generator/weights/
 services/face-generator/lookup_table.json
+apps/web/.vercel/
