@@ -141,8 +141,7 @@ Create a Redis database. Copy the **REST URL** and **REST token**.
 
 - Import the GitHub repo into Vercel.
 - Set **Root Directory** to `apps/web`.
-- Set **Install Command** to `pnpm install --frozen-lockfile`.
-- Set **Build Command** to `pnpm --filter @zaruce/web build`.
+- Leave install / build commands at the auto-detected defaults — `apps/web/vercel.json` already overrides them to use pnpm from the repo root, and the committed `pnpm-lock.yaml` ensures reproducible installs.
 - Branch deploys are automatic; production tracks `main`.
 
 Add these environment variables in the Vercel dashboard (all environments):

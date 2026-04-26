@@ -4,13 +4,9 @@
   "version": "0.1.0",
   "description": "8 Billion Faces — one AI-generated face slot for every person on Earth.",
   "packageManager": "pnpm@9.12.0",
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ],
   "scripts": {
     "dev": "pnpm --filter @zaruce/web dev",
-    "build": "pnpm -r build",
+    "build": "pnpm --filter @zaruce/web build",
     "typecheck": "pnpm -r typecheck",
     "gen:buckets": "node scripts/gen-bucket-seed.mjs"
   },
