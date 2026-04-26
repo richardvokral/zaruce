@@ -104,7 +104,14 @@ class FaceGenerator:
 
         weights_path = "/weights/stylegan3-r-ffhq-1024x1024.pkl"
         if not os.path.exists(weights_path):
-            self._hydrate_weights(weights_path)
+            # Fail fast instead of trying a multi-minute download inside the
+            # HTTP request path — Modal's web endpoint layer caps requests
+            # around 5 minutes and the user just sees a timeout page.
+            # Run `modal run main.py::download_weights` once after deploy.
+            raise RuntimeError(
+                f"weights missing at {weights_path}; "
+                "run `modal run main.py::download_weights` once before serving"
+            )
 
         with open(weights_path, "rb") as fh:
             self.G = pickle.load(fh)["G_ema"].cuda().eval()
@@ -119,16 +126,6 @@ class FaceGenerator:
 
         self.salt = os.environ["SEED_SALT"]
         self.resolution = int(os.environ.get("FACE_RESOLUTION", "256"))
-
-    def _hydrate_weights(self, path: str) -> None:
-        import urllib.request
-        url = os.environ.get(
-            "WEIGHTS_URL",
-            "https://api.ngc.nvidia.com/v2/models/nvidia/research/stylegan3/versions/1/files/stylegan3-r-ffhqu-1024x1024.pkl",
-        )
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        urllib.request.urlretrieve(url, path)
-        weights_volume.commit()
 
     def _resolve_seed(self, slot_index: int, bucket_id: Optional[int]) -> int:
         if bucket_id is None:
@@ -157,6 +154,39 @@ class FaceGenerator:
         buf = io.BytesIO()
         pil.save(buf, format="JPEG", quality=85, optimize=True)
         return buf.getvalue()
+
+
+@app.function(
+    image=image,
+    volumes={"/weights": weights_volume},
+    secrets=[modal.Secret.from_name("zaruce-secrets")],
+    timeout=3600,
+)
+def download_weights() -> str:
+    """One-shot: pull the StyleGAN3 checkpoint into the weights volume.
+
+    Run from the CLI after the very first deploy:
+
+        modal run services/face-generator/main.py::download_weights
+
+    Splitting this out of FaceGenerator.setup() keeps the HTTP request path
+    fast — Modal's fastapi_endpoint layer caps requests around 5 minutes,
+    which isn't enough to download 300 MB from NVIDIA on a cold container.
+    """
+    import urllib.request
+
+    weights_path = "/weights/stylegan3-r-ffhq-1024x1024.pkl"
+    if os.path.exists(weights_path):
+        return f"already present at {weights_path}"
+
+    url = os.environ.get(
+        "WEIGHTS_URL",
+        "https://api.ngc.nvidia.com/v2/models/nvidia/research/stylegan3/versions/1/files/stylegan3-r-ffhqu-1024x1024.pkl",
+    )
+    os.makedirs(os.path.dirname(weights_path), exist_ok=True)
+    urllib.request.urlretrieve(url, weights_path)
+    weights_volume.commit()
+    return f"downloaded {url} -> {weights_path}"
 
 
 @app.function(
