@@ -111,9 +111,10 @@ function setSlotImage(el: HTMLDivElement, index: bigint) {
   img.alt = "";
   img.src = `${FACE_BASE}/${id}.jpg`;
   img.addEventListener("load", () => img.classList.add("loaded"), { once: true });
-  // On error we leave the silhouette + tinted background visible — no extra
-  // styling required. Production behavior: a 404 here means "no face yet
-  // generated" which is the expected state for ~7.999B slots out of 8B.
+  // On error remove the <img> so browsers don't paint a broken-image glyph
+  // over the silhouette fallback. A 404/503 here is the expected state for
+  // unassigned slots and when MODAL_FACE_BASE isn't configured yet.
+  img.addEventListener("error", () => img.remove(), { once: true });
   el.appendChild(img);
 }
 

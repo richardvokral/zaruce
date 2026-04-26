@@ -132,15 +132,16 @@ const totalSlots = currentTotalSlots().toString();
         top: 0;
         width: var(--slot-w);
         height: var(--slot-h);
-        /* Subtle per-slot tint — set from JS via --slot-hue. */
-        background-color: hsl(var(--slot-hue, 220), 12%, 16%);
+        /* Per-slot tint — set from JS via --slot-hue. Bright enough that empty
+           slots are clearly visible against the near-black page background. */
+        background-color: hsl(var(--slot-hue, 220), 18%, 28%);
         /* Profile-picture silhouette as background. Lives behind the <img>;
            visible until a real face loads (or forever, if the backend isn't
            configured). */
         background-image: url("data:image/svg+xml;utf8,\
 <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'>\
-<circle cx='100' cy='78' r='32' fill='%23ffffff' fill-opacity='0.10'/>\
-<path d='M40 200c0-36 27-62 60-62s60 26 60 62z' fill='%23ffffff' fill-opacity='0.10'/>\
+<circle cx='100' cy='78' r='32' fill='%23ffffff' fill-opacity='0.28'/>\
+<path d='M40 200c0-36 27-62 60-62s60 26 60 62z' fill='%23ffffff' fill-opacity='0.28'/>\
 </svg>");
         background-size: 100% 100%;
         background-position: center;
@@ -148,7 +149,7 @@ const totalSlots = currentTotalSlots().toString();
         border-radius: 6px;
         overflow: hidden;
         contain: layout paint;
-        box-shadow: inset 0 0 0 1px hsl(var(--slot-hue, 220), 12%, 22%);
+        box-shadow: inset 0 0 0 1px hsl(var(--slot-hue, 220), 18%, 42%);
       }
       .slot img {
         width: 100%;
