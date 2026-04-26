@@ -4,23 +4,27 @@ import { getDb } from "../../../server/db";
 export const prerender = false;
 
 /**
- * Server-side probe used by /admin. Checks:
- *   - Which env vars are set (booleans only, never values)
- *   - What URL /api/face/<id> would redirect to (without following it)
- *   - Modal /face endpoint reachability (HEAD-style: status, content-type, length)
- *   - Modal admin-status endpoint payload
- *   - DB connectivity (SELECT 1)
- *   - Local /api/counter response
+ * Server-side probe used by /admin. Each sub-check is wrapped in a per-probe
+ * timeout so a hung Modal cold-start can't kill the whole serverless function
+ * (Vercel caps at 10s Hobby / 60s Pro). Probes return partial results with
+ * timing info so the admin page can show what worked and what didn't.
  *
  * Auth: Bearer ADMIN_TOKEN. Same token the Modal admin endpoints check.
  */
 
 interface ProbeRequest {
   slot?: number;
+  modalTimeoutMs?: number;
+}
+
+interface StepLog {
+  step: string;
+  ms: number;
+  ok: boolean;
+  note?: string;
 }
 
 const env = (key: string): string =>
-  // import.meta.env wins at build time on Vercel; process.env covers Node runtime.
   ((import.meta.env as Record<string, string | undefined>)[key] ??
     process.env[key] ??
     "").trim();
@@ -31,19 +35,47 @@ function mask(value: string): string {
   return `${value.slice(0, 3)}…${value.slice(-2)} (len ${value.length})`;
 }
 
-async function probeModalFace(base: string, slot: number) {
-  if (!base) return { ok: false, reason: "MODAL_FACE_BASE not set" };
-  const url = `${base.replace(/\/$/, "")}/?slot=${slot}`;
+/** Race a fetch against a timeout — never hang the serverless function. */
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   const start = Date.now();
   try {
-    const res = await fetch(url, { redirect: "manual" });
-    const elapsed = Date.now() - start;
+    const res = await fetch(url, { ...init, signal: ctrl.signal });
+    return { res, elapsedMs: Date.now() - start };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function timed<T>(label: string, fn: () => Promise<T>, log: StepLog[]): Promise<T> {
+  const start = Date.now();
+  try {
+    const out = await fn();
+    const ok = !!(out as { ok?: boolean }).ok;
+    log.push({ step: label, ms: Date.now() - start, ok });
+    return out;
+  } catch (err) {
+    log.push({ step: label, ms: Date.now() - start, ok: false, note: (err as Error).message });
+    throw err;
+  }
+}
+
+async function probeModalFace(base: string, slot: number, timeoutMs: number) {
+  if (!base) return { ok: false, reason: "MODAL_FACE_BASE not set", skipped: true };
+  const url = `${base.replace(/\/$/, "")}/?slot=${slot}`;
+  try {
+    const { res, elapsedMs } = await fetchWithTimeout(url, { redirect: "manual" }, timeoutMs);
     const contentType = res.headers.get("content-type") ?? "";
     const contentLength = res.headers.get("content-length") ?? "";
     let bodySnippet = "";
     if (!contentType.startsWith("image/")) {
-      const text = await res.text();
-      bodySnippet = text.slice(0, 400);
+      try {
+        const text = await res.text();
+        bodySnippet = text.slice(0, 400);
+      } catch (e) {
+        bodySnippet = `<could not read body: ${(e as Error).message}>`;
+      }
     }
     return {
       ok: res.ok && contentType.startsWith("image/"),
@@ -51,69 +83,85 @@ async function probeModalFace(base: string, slot: number) {
       status: res.status,
       contentType,
       contentLength,
-      elapsedMs: elapsed,
+      elapsedMs,
       bodySnippet,
     };
   } catch (err) {
-    return { ok: false, url, error: (err as Error).message };
+    const msg = (err as Error).message || String(err);
+    return {
+      ok: false,
+      url,
+      error: msg,
+      timedOut: msg.toLowerCase().includes("abort"),
+      timeoutMs,
+    };
   }
 }
 
-async function probeModalAdmin(base: string, token: string) {
-  if (!base) return { ok: false, reason: "MODAL_ADMIN_STATUS_BASE not set" };
+async function probeModalAdmin(base: string, token: string, timeoutMs: number) {
+  if (!base) return { ok: false, reason: "MODAL_ADMIN_STATUS_BASE not set", skipped: true };
   const url = `${base.replace(/\/$/, "")}/?authorization=${encodeURIComponent(`Bearer ${token}`)}`;
+  const redactedUrl = url.replace(/authorization=[^&]+/, "authorization=REDACTED");
   try {
-    const res = await fetch(url);
+    const { res, elapsedMs } = await fetchWithTimeout(url, {}, timeoutMs);
     const text = await res.text();
     let parsed: unknown = null;
     try { parsed = JSON.parse(text); } catch { /* not json */ }
     return {
       ok: res.ok,
       status: res.status,
-      url: url.replace(/authorization=[^&]+/, "authorization=REDACTED"),
+      url: redactedUrl,
+      elapsedMs,
       body: parsed ?? text.slice(0, 400),
     };
   } catch (err) {
-    return { ok: false, error: (err as Error).message };
+    return { ok: false, url: redactedUrl, error: (err as Error).message };
   }
 }
 
-async function probeFaceRedirect(origin: string, slot: number) {
+async function probeFaceRedirect(origin: string, slot: number, timeoutMs: number) {
   const url = `${origin}/api/face/${slot}.jpg`;
   try {
-    const res = await fetch(url, { redirect: "manual" });
+    const { res, elapsedMs } = await fetchWithTimeout(url, { redirect: "manual" }, timeoutMs);
     return {
       ok: res.status === 302,
       status: res.status,
       location: res.headers.get("location") ?? "",
       cacheControl: res.headers.get("cache-control") ?? "",
+      elapsedMs,
     };
   } catch (err) {
     return { ok: false, error: (err as Error).message };
   }
 }
 
-async function probeLocalCounter(origin: string) {
+async function probeLocalCounter(origin: string, timeoutMs: number) {
   const url = `${origin}/api/counter`;
   try {
-    const res = await fetch(url, { cache: "no-store" });
+    const { res, elapsedMs } = await fetchWithTimeout(url, { cache: "no-store" } as RequestInit, timeoutMs);
     const text = await res.text();
     let parsed: unknown = null;
     try { parsed = JSON.parse(text); } catch { /* */ }
-    return { ok: res.ok, status: res.status, body: parsed ?? text.slice(0, 200) };
+    return { ok: res.ok, status: res.status, elapsedMs, body: parsed ?? text.slice(0, 200) };
   } catch (err) {
     return { ok: false, error: (err as Error).message };
   }
 }
 
-async function probeDb() {
+async function probeDb(timeoutMs: number) {
   const sql = getDb();
-  if (!sql) return { ok: false, reason: "DATABASE_URL not set" };
+  if (!sql) return { ok: false, reason: "DATABASE_URL not set", skipped: true };
+  const start = Date.now();
   try {
-    const rows = (await sql`SELECT 1 AS one`) as Array<{ one: number }>;
-    return { ok: rows[0]?.one === 1, rows };
+    const result = await Promise.race([
+      sql`SELECT 1 AS one` as Promise<Array<{ one: number }>>,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`db timeout after ${timeoutMs}ms`)), timeoutMs),
+      ),
+    ]);
+    return { ok: result[0]?.one === 1, elapsedMs: Date.now() - start };
   } catch (err) {
-    return { ok: false, error: (err as Error).message };
+    return { ok: false, error: (err as Error).message, elapsedMs: Date.now() - start };
   }
 }
 
@@ -138,10 +186,21 @@ export const POST: APIRoute = async ({ request, url }) => {
     payload = (await request.json()) as ProbeRequest;
   } catch { /* empty body is fine */ }
   const slot = Number.isFinite(payload.slot) && (payload.slot ?? -1) >= 0 ? payload.slot! : 12345;
+  // Per-probe budget. Total worst case ≈ 5 × this. Default 6s keeps us under
+  // the 10s Hobby cap with margin; bump via the `modalTimeoutMs` param if you
+  // want to wait through a Modal cold-start.
+  const probeTimeoutMs = Number.isFinite(payload.modalTimeoutMs) && (payload.modalTimeoutMs ?? 0) > 0
+    ? Math.min(Math.max(payload.modalTimeoutMs!, 1000), 55_000)
+    : 6_000;
 
   const origin = url.origin;
   const modalFaceBase = env("MODAL_FACE_BASE");
   const modalAdminBase = env("MODAL_ADMIN_STATUS_BASE");
+
+  const log: StepLog[] = [];
+  const overallStart = Date.now();
+
+  console.log(`[admin/diagnostics] start slot=${slot} timeout=${probeTimeoutMs}ms origin=${origin}`);
 
   const envFlags = {
     DATABASE_URL: { set: !!env("DATABASE_URL"), preview: mask(env("DATABASE_URL")) },
@@ -156,25 +215,39 @@ export const POST: APIRoute = async ({ request, url }) => {
     PUBLIC_API_BASE: { set: !!env("PUBLIC_API_BASE"), preview: env("PUBLIC_API_BASE") || "" },
   };
 
-  const [faceRedirect, modalFace, modalAdmin, db, counter] = await Promise.all([
-    probeFaceRedirect(origin, slot),
-    probeModalFace(modalFaceBase, slot),
-    probeModalAdmin(modalAdminBase, expected),
-    probeDb(),
-    probeLocalCounter(origin),
+  // Run probes in parallel but each guarded by its own timeout. Promise.allSettled
+  // ensures one probe failing doesn't lose the others.
+  const settled = await Promise.allSettled([
+    timed("faceRedirect", () => probeFaceRedirect(origin, slot, probeTimeoutMs), log),
+    timed("modalFace", () => probeModalFace(modalFaceBase, slot, probeTimeoutMs), log),
+    timed("modalAdmin", () => probeModalAdmin(modalAdminBase, expected, probeTimeoutMs), log),
+    timed("db", () => probeDb(probeTimeoutMs), log),
+    timed("counter", () => probeLocalCounter(origin, probeTimeoutMs), log),
   ]);
 
-  return new Response(JSON.stringify({
+  const get = <T>(i: number, fallback: T): T =>
+    settled[i]!.status === "fulfilled"
+      ? (settled[i] as PromiseFulfilledResult<T>).value
+      : fallback;
+
+  const result = {
     slot,
     origin,
+    probeTimeoutMs,
+    totalElapsedMs: Date.now() - overallStart,
     env: envFlags,
-    faceRedirect,
-    modalFace,
-    modalAdmin,
-    db,
-    counter,
-    note: "Set MODAL_ADMIN_STATUS_BASE in Vercel to enable the Modal admin probe (e.g. https://richard-vokral--admin-status.modal.run).",
-  }, null, 2), {
+    faceRedirect: get(0, { ok: false, error: "probe crashed" }),
+    modalFace: get(1, { ok: false, error: "probe crashed" }),
+    modalAdmin: get(2, { ok: false, error: "probe crashed" }),
+    db: get(3, { ok: false, error: "probe crashed" }),
+    counter: get(4, { ok: false, error: "probe crashed" }),
+    log,
+    note: "Set MODAL_ADMIN_STATUS_BASE in Vercel to enable the Modal admin probe (e.g. https://richard-vokral--admin-status.modal.run). Pass {modalTimeoutMs: 30000} in the request body to give Modal cold-starts more time.",
+  };
+
+  console.log(`[admin/diagnostics] done in ${result.totalElapsedMs}ms`, log);
+
+  return new Response(JSON.stringify(result, null, 2), {
     headers: { "content-type": "application/json" },
   });
 };
