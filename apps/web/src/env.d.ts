@@ -10,6 +10,7 @@ interface ImportMetaEnv {
   readonly VISITOR_HASH_KEY?: string;
   readonly SEED_SALT?: string;
   readonly MODAL_FACE_BASE?: string;
+  readonly MODAL_ADMIN_STATUS_BASE?: string;
   readonly ADMIN_TOKEN?: string;
   readonly RATE_LIMIT_WINDOW_SEC?: string;
   readonly RATE_LIMIT_MAX?: string;

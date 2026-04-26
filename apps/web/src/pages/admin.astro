@@ -1,0 +1,281 @@
+---
+const title = "zaruce admin diagnostics";
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex,nofollow" />
+    <title>{title}</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b0b0b;
+        --fg: #e8e8e8;
+        --muted: #9a9a9a;
+        --accent: #f5d340;
+        --bad: #ff6b6b;
+        --good: #6bd58a;
+        --panel: #161616;
+        --border: #2a2a2a;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0; padding: 0;
+        background: var(--bg); color: var(--fg);
+        font: 14px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+      }
+      main { max-width: 920px; margin: 0 auto; padding: 32px 20px 64px; }
+      h1 { font-size: 18px; margin: 0 0 4px; letter-spacing: 0.04em; }
+      h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); margin: 28px 0 8px; }
+      .sub { color: var(--muted); margin: 0 0 24px; font-size: 13px; }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 14px 16px;
+        margin-bottom: 12px;
+      }
+      label { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 4px; }
+      input[type="password"], input[type="number"] {
+        width: 100%;
+        background: #0a0a0a;
+        color: var(--fg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 8px 10px;
+        font: inherit;
+      }
+      .row { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
+      .row > div { flex: 1; min-width: 180px; }
+      button {
+        background: var(--accent); color: #000;
+        border: 0; border-radius: 4px;
+        padding: 9px 14px; font: inherit; font-weight: 600;
+        cursor: pointer;
+      }
+      button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--border); font-weight: 400; }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      pre {
+        background: #0a0a0a; border: 1px solid var(--border); border-radius: 4px;
+        padding: 12px; overflow: auto; max-height: 360px;
+        font-size: 12px; line-height: 1.45;
+      }
+      .ok { color: var(--good); }
+      .fail { color: var(--bad); }
+      .muted { color: var(--muted); }
+      table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+      th { color: var(--muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; font-size: 10px; }
+      td.value { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; word-break: break-all; }
+      .preview-img { background: #050505; border: 1px dashed var(--border); border-radius: 4px; min-height: 200px; display: grid; place-items: center; padding: 12px; }
+      .preview-img img { max-width: 100%; max-height: 280px; image-rendering: auto; }
+      .preview-img .placeholder { color: var(--muted); font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>zaruce admin diagnostics</h1>
+      <p class="sub">All probes run server-side via /api/admin/diagnostics. Token stays in this tab's sessionStorage.</p>
+
+      <section class="panel">
+        <div class="row">
+          <div>
+            <label for="token">admin token</label>
+            <input id="token" type="password" autocomplete="off" placeholder="Bearer value of ADMIN_TOKEN" />
+          </div>
+          <div style="flex: 0 0 auto">
+            <label for="slot">slot</label>
+            <input id="slot" type="number" min="0" value="12345" style="width: 140px" />
+          </div>
+          <div style="flex: 0 0 auto">
+            <button id="run">run diagnostics</button>
+          </div>
+          <div style="flex: 0 0 auto">
+            <button id="clear" class="secondary">forget token</button>
+          </div>
+        </div>
+      </section>
+
+      <h2>summary</h2>
+      <div id="summary" class="panel muted">click run to probe.</div>
+
+      <h2>face image preview</h2>
+      <div class="panel">
+        <div class="row" style="margin-bottom: 12px">
+          <button id="load-img" class="secondary">load /api/face/&lt;slot&gt;.jpg in browser</button>
+          <span id="img-meta" class="muted"></span>
+        </div>
+        <div id="preview" class="preview-img"><span class="placeholder">no image loaded yet</span></div>
+      </div>
+
+      <h2>raw diagnostics response</h2>
+      <pre id="raw" class="muted">awaiting first run.</pre>
+    </main>
+
+    <script type="module">
+      const $ = (id) => document.getElementById(id);
+      const tokenEl = $("token");
+      const slotEl = $("slot");
+      const runEl = $("run");
+      const clearEl = $("clear");
+      const summaryEl = $("summary");
+      const rawEl = $("raw");
+      const previewEl = $("preview");
+      const imgMetaEl = $("img-meta");
+      const loadImgEl = $("load-img");
+
+      const STORAGE_KEY = "zaruce.admin.token";
+      const stored = sessionStorage.getItem(STORAGE_KEY);
+      if (stored) tokenEl.value = stored;
+      tokenEl.addEventListener("change", () => {
+        if (tokenEl.value) sessionStorage.setItem(STORAGE_KEY, tokenEl.value);
+        else sessionStorage.removeItem(STORAGE_KEY);
+      });
+
+      clearEl.addEventListener("click", () => {
+        sessionStorage.removeItem(STORAGE_KEY);
+        tokenEl.value = "";
+        tokenEl.focus();
+      });
+
+      function badge(ok, label) {
+        const cls = ok ? "ok" : "fail";
+        const sym = ok ? "✓" : "✗";
+        return `<span class="${cls}">${sym} ${label}</span>`;
+      }
+
+      function renderSummary(data) {
+        const rows = [];
+        const env = data.env ?? {};
+        const envOk = (k) => env[k]?.set;
+
+        rows.push(["MODAL_FACE_BASE", envOk("MODAL_FACE_BASE"), env.MODAL_FACE_BASE?.preview || ""]);
+        rows.push(["MODAL_ADMIN_STATUS_BASE", envOk("MODAL_ADMIN_STATUS_BASE"), env.MODAL_ADMIN_STATUS_BASE?.preview || ""]);
+        rows.push(["ADMIN_TOKEN", envOk("ADMIN_TOKEN"), env.ADMIN_TOKEN?.preview || ""]);
+        rows.push(["SEED_SALT", envOk("SEED_SALT"), env.SEED_SALT?.preview || ""]);
+        rows.push(["VISITOR_HASH_KEY", envOk("VISITOR_HASH_KEY"), env.VISITOR_HASH_KEY?.preview || ""]);
+        rows.push(["DATABASE_URL", envOk("DATABASE_URL"), env.DATABASE_URL?.preview || ""]);
+        rows.push(["UPSTASH_REDIS_REST_URL", envOk("UPSTASH_REDIS_REST_URL"), env.UPSTASH_REDIS_REST_URL?.preview || ""]);
+        rows.push(["UPSTASH_REDIS_REST_TOKEN", envOk("UPSTASH_REDIS_REST_TOKEN"), env.UPSTASH_REDIS_REST_TOKEN?.preview || ""]);
+
+        const tableEnv = `<table>
+          <thead><tr><th>env var</th><th>set</th><th>value (redacted)</th></tr></thead>
+          <tbody>${rows.map(([name, ok, prev]) => `
+            <tr><td>${name}</td><td>${ok ? '<span class="ok">✓</span>' : '<span class="fail">✗</span>'}</td><td class="value">${prev || ""}</td></tr>`).join("")}
+          </tbody></table>`;
+
+        const probes = [];
+        const fr = data.faceRedirect;
+        if (fr) {
+          probes.push(`<tr>
+            <td>/api/face/${data.slot}.jpg → 302 location</td>
+            <td>${fr.ok ? '<span class="ok">302</span>' : `<span class="fail">${fr.status ?? "error"}</span>`}</td>
+            <td class="value">${fr.location || fr.error || "—"}</td>
+          </tr>`);
+        }
+        const mf = data.modalFace;
+        if (mf) {
+          probes.push(`<tr>
+            <td>Modal /face?slot=${data.slot}</td>
+            <td>${mf.ok ? '<span class="ok">200 image</span>' : `<span class="fail">${mf.status ?? "error"}</span>`}</td>
+            <td class="value">${mf.contentType || ""} ${mf.contentLength ? `(${mf.contentLength} bytes` : ""}${mf.elapsedMs ? `, ${mf.elapsedMs}ms)` : mf.contentLength ? ")" : ""}<br>${mf.bodySnippet ? `<span class="muted">body:</span> ${mf.bodySnippet.replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]))}` : mf.error || ""}</td>
+          </tr>`);
+        }
+        const ma = data.modalAdmin;
+        if (ma) {
+          probes.push(`<tr>
+            <td>Modal /admin/status</td>
+            <td>${ma.ok ? '<span class="ok">200</span>' : `<span class="fail">${ma.status ?? ma.reason ?? "error"}</span>`}</td>
+            <td class="value">${typeof ma.body === "string" ? ma.body : JSON.stringify(ma.body)}${ma.error ? ` <span class="fail">${ma.error}</span>` : ""}</td>
+          </tr>`);
+        }
+        const db = data.db;
+        if (db) {
+          probes.push(`<tr>
+            <td>Postgres SELECT 1</td>
+            <td>${db.ok ? '<span class="ok">ok</span>' : '<span class="fail">fail</span>'}</td>
+            <td class="value">${db.error || db.reason || "ok"}</td>
+          </tr>`);
+        }
+        const ct = data.counter;
+        if (ct) {
+          probes.push(`<tr>
+            <td>/api/counter</td>
+            <td>${ct.ok ? '<span class="ok">200</span>' : `<span class="fail">${ct.status ?? "error"}</span>`}</td>
+            <td class="value">${typeof ct.body === "string" ? ct.body : JSON.stringify(ct.body)}</td>
+          </tr>`);
+        }
+
+        const tableProbes = `<table>
+          <thead><tr><th>probe</th><th>status</th><th>detail</th></tr></thead>
+          <tbody>${probes.join("")}</tbody>
+        </table>`;
+
+        summaryEl.classList.remove("muted");
+        summaryEl.innerHTML = tableEnv + "<div style='height:12px'></div>" + tableProbes;
+      }
+
+      async function run() {
+        if (!tokenEl.value) {
+          summaryEl.classList.add("muted");
+          summaryEl.textContent = "enter your ADMIN_TOKEN first.";
+          return;
+        }
+        sessionStorage.setItem(STORAGE_KEY, tokenEl.value);
+        runEl.disabled = true;
+        runEl.textContent = "running…";
+        try {
+          const res = await fetch("/api/admin/diagnostics", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              authorization: `Bearer ${tokenEl.value}`,
+            },
+            body: JSON.stringify({ slot: Number(slotEl.value) }),
+          });
+          const text = await res.text();
+          let data;
+          try { data = JSON.parse(text); } catch { data = { raw: text, status: res.status }; }
+          rawEl.classList.remove("muted");
+          rawEl.textContent = JSON.stringify(data, null, 2);
+          if (!res.ok) {
+            summaryEl.classList.add("fail");
+            summaryEl.textContent = `${res.status}: ${data.error || text}`;
+          } else {
+            renderSummary(data);
+          }
+        } catch (err) {
+          summaryEl.classList.add("fail");
+          summaryEl.textContent = String(err);
+        } finally {
+          runEl.disabled = false;
+          runEl.textContent = "run diagnostics";
+        }
+      }
+
+      runEl.addEventListener("click", run);
+      tokenEl.addEventListener("keydown", (e) => { if (e.key === "Enter") run(); });
+      slotEl.addEventListener("keydown", (e) => { if (e.key === "Enter") run(); });
+
+      loadImgEl.addEventListener("click", () => {
+        const slot = Number(slotEl.value);
+        const url = `/api/face/${slot}.jpg?cb=${Date.now()}`;
+        previewEl.innerHTML = `<span class="placeholder">loading…</span>`;
+        imgMetaEl.textContent = url;
+        const img = new Image();
+        const start = performance.now();
+        img.addEventListener("load", () => {
+          const elapsed = Math.round(performance.now() - start);
+          previewEl.replaceChildren(img);
+          imgMetaEl.textContent = `${url} — ${img.naturalWidth}×${img.naturalHeight} in ${elapsed}ms`;
+        });
+        img.addEventListener("error", () => {
+          previewEl.innerHTML = `<span class="placeholder fail">load failed (open ${url} directly to see the response)</span>`;
+        });
+        img.src = url;
+      });
+    </script>
+  </body>
+</html>
