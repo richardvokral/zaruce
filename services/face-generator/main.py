@@ -46,6 +46,13 @@ image = (
         "scipy",
         "click",
         "fastapi",
+        # StyleGAN3's dnnlib/util.py and torch_utils import these at module
+        # load time (well before any of our code runs). Without them every
+        # FaceGenerator container crashes during setup() with ModuleNotFound,
+        # Modal retries indefinitely, and the HTTP request hangs forever.
+        "requests",
+        "imageio",
+        "psutil",
     )
     # StyleGAN3 reference repo — pinned to the public NVIDIA release.
     .run_commands("git clone https://github.com/NVlabs/stylegan3 /opt/stylegan3")
