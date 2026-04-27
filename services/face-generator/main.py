@@ -76,8 +76,16 @@ image = (
 )
 
 # Smaller image for the static_face endpoint — no PyTorch, no CUDA, no
-# StyleGAN3, just enough to read a file from a volume and stream it.
-static_image = modal.Image.debian_slim(python_version="3.11").pip_install("fastapi")
+# StyleGAN3, just enough to read a file from a volume and stream it. Still
+# needs the same local helper modules because Modal imports main.py during
+# container startup, and main.py imports `population` and `prebake` at the
+# top — without these the container would crash during module load with
+# ModuleNotFoundError before our code ever runs.
+static_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .pip_install("fastapi")
+    .add_local_python_source("population", "prebake")
+)
 
 weights_volume = modal.Volume.from_name(WEIGHTS_VOLUME, create_if_missing=True)
 lookup_volume = modal.Volume.from_name(LOOKUP_VOLUME, create_if_missing=True)
