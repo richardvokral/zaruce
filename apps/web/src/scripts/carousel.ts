@@ -57,8 +57,14 @@ function readLayout(): Layout {
 
 let layout = readLayout();
 
-/** Logical center of the viewport, in slot units. May be fractional. */
-let centerIndex: number = Number(total / 2n); // start at the middle
+/** Logical center of the viewport, in slot units. May be fractional. The
+ *  SSR'd `data-initial-slot` puts each visitor inside a random pre-baked
+ *  window so the slots near the start position have static JPEGs ready
+ *  on disk — no GPU billed for the first impression. */
+const initialSlotAttr = stage.dataset.initialSlot;
+let centerIndex: number = initialSlotAttr
+  ? Number(BigInt(initialSlotAttr))
+  : Number(total / 2n);
 let velocity = 0; // px/frame inertia
 let dragging = false;
 let assignedIndex: bigint | null = null;

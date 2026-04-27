@@ -1,5 +1,5 @@
 ---
-import { currentTotalSlots } from "@zaruce/shared";
+import { currentTotalSlots, randomPrebakeAnchor, PREBAKE_WINDOW_SIZE } from "@zaruce/shared";
 
 const title = "Everyone — 8 Billion Faces";
 const description =
@@ -8,6 +8,13 @@ const description =
 // Recompute on every render. The function is monotonic in time and pure;
 // no DB lookup needed. Vercel's CDN caches the response per-URL anyway.
 const totalSlots = currentTotalSlots().toString();
+
+// Drop each visitor into a randomly-picked pre-baked window so the slots
+// they see at the centre of the carousel are already on disk in the Modal
+// prebake volume — no GPU billed for the initial impression. The honest
+// permalink (#<n>) overrides this client-side if the URL has one.
+const initialAnchor = randomPrebakeAnchor();
+const initialSlot = (initialAnchor + BigInt(Math.floor(PREBAKE_WINDOW_SIZE / 2))).toString();
 ---
 
 <!doctype html>
@@ -55,7 +62,7 @@ const totalSlots = currentTotalSlots().toString();
     </style>
   </head>
   <body>
-    <main id="stage" data-total-slots={totalSlots}>
+    <main id="stage" data-total-slots={totalSlots} data-initial-slot={initialSlot}>
       <div id="carousel" aria-label="Carousel of 8 billion faces" role="region">
         <div id="track"></div>
       </div>

@@ -33,3 +33,4 @@ export interface CounterResponse {
 
 export * from "./seed.js";
 export * from "./attributes.js";
+export * from "./prebake.js";

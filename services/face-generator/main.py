@@ -1,7 +1,8 @@
 """Modal serverless face generator.
 
 Public endpoints:
-    GET  /face?slot=<n>&bucket=<id?>      — JPEG of a face, deterministic per slot
+    GET  /face?slot=<n>&bucket=<id?>      — JPEG of a face, deterministic per slot (GPU)
+    GET  /static-face?slot=<n>            — JPEG of a pre-baked face (CPU, near-free)
     GET  /admin/status                    — bucket coverage report
     POST /admin/regen                     — regenerate seed list for one bucket
     POST /admin/warm                      — pre-warm a list of slots
@@ -30,10 +31,16 @@ from typing import Optional
 import modal
 
 from population import current_total_slots
+from prebake import (
+    PREBAKE_WINDOW_COUNT,
+    PREBAKE_WINDOW_SIZE,
+    prebake_anchors,
+)
 
 APP_NAME = "zaruce-face-generator"
 WEIGHTS_VOLUME = "zaruce-stylegan-weights"
 LOOKUP_VOLUME = "zaruce-bucket-lookup"
+PREBAKE_VOLUME = "zaruce-prebake"
 
 image = (
     # StyleGAN3's bias_act / filtered_lrelu / upfirdn2d ops are JIT-compiled
@@ -64,12 +71,17 @@ image = (
     # StyleGAN3 reference repo — pinned to the public NVIDIA release.
     .run_commands("git clone https://github.com/NVlabs/stylegan3 /opt/stylegan3")
     .env({"PYTHONPATH": "/opt/stylegan3"})
-    # Bring local helper modules (population, build_lookup) into the image.
-    .add_local_python_source("population", "build_lookup")
+    # Bring local helper modules (population, build_lookup, prebake) into the image.
+    .add_local_python_source("population", "build_lookup", "prebake")
 )
+
+# Smaller image for the static_face endpoint — no PyTorch, no CUDA, no
+# StyleGAN3, just enough to read a file from a volume and stream it.
+static_image = modal.Image.debian_slim(python_version="3.11").pip_install("fastapi")
 
 weights_volume = modal.Volume.from_name(WEIGHTS_VOLUME, create_if_missing=True)
 lookup_volume = modal.Volume.from_name(LOOKUP_VOLUME, create_if_missing=True)
+prebake_volume = modal.Volume.from_name(PREBAKE_VOLUME, create_if_missing=True)
 
 app = modal.App(APP_NAME, image=image)
 
@@ -97,7 +109,7 @@ def _pick_seed_from_bucket(index: int, seeds: list[int], salt: str) -> int:
 
 @app.cls(
     gpu="A10G",
-    volumes={"/weights": weights_volume, "/lookup": lookup_volume},
+    volumes={"/weights": weights_volume, "/lookup": lookup_volume, "/prebake": prebake_volume},
     secrets=[modal.Secret.from_name("zaruce-secrets")],
     # Keep a warm GPU container around for ten minutes after the last request
     # so adjacent slot views (carousel scroll) don't each pay a cold-start.
@@ -105,7 +117,8 @@ def _pick_seed_from_bucket(index: int, seeds: list[int], salt: str) -> int:
     min_containers=0,
     # First call has to download ~300 MB of StyleGAN3 weights from NVIDIA into
     # the volume and load the model into VRAM. Default 300 s isn't enough.
-    timeout=1800,
+    # The prebake job needs longer — up to 4 hours for the full 10k-face bake.
+    timeout=4 * 3600,
 )
 class FaceGenerator:
     @modal.enter()
@@ -210,8 +223,10 @@ class FaceGenerator:
         # Fallback to anonymous derivation if the bucket is empty.
         return _seed_for_slot(slot_index, self.salt)
 
-    @modal.method()
-    def generate(self, slot_index: int, bucket_id: Optional[int] = None) -> bytes:
+    def _generate_jpeg(self, slot_index: int, bucket_id: Optional[int] = None) -> bytes:
+        """Inference + JPEG encode. Plain method so prebake_all_windows can
+        call it directly without paying the modal.method() RPC overhead per
+        face — important when we're generating thousands inside one container."""
         import numpy as np
         import torch
         from PIL import Image
@@ -228,6 +243,55 @@ class FaceGenerator:
         buf = io.BytesIO()
         pil.save(buf, format="JPEG", quality=85, optimize=True)
         return buf.getvalue()
+
+    @modal.method()
+    def generate(self, slot_index: int, bucket_id: Optional[int] = None) -> bytes:
+        return self._generate_jpeg(slot_index, bucket_id)
+
+    @modal.method()
+    def prebake_all_windows(self, skip_existing: bool = True) -> dict:
+        """Generate every slot in every pre-baked window and write the JPEGs
+        into /prebake/<slot>.jpg. Pays one GPU cold-start for the whole batch
+        instead of one per face. Idempotent — re-running with skip_existing
+        will pick up where a previous run left off (volume is committed after
+        each window so partial progress is durable).
+
+        Run from the CLI after the very first deploy:
+
+            modal run services/face-generator/main.py::prebake_entrypoint
+        """
+        os.makedirs("/prebake", exist_ok=True)
+        anchors = prebake_anchors()
+        total_written = 0
+        total_skipped = 0
+        for window_idx, anchor in enumerate(anchors):
+            written_in_window = 0
+            for offset in range(PREBAKE_WINDOW_SIZE):
+                slot = anchor + offset
+                path = f"/prebake/{slot}.jpg"
+                if skip_existing and os.path.exists(path):
+                    total_skipped += 1
+                    continue
+                jpeg = self._generate_jpeg(slot)
+                with open(path, "wb") as fh:
+                    fh.write(jpeg)
+                written_in_window += 1
+                total_written += 1
+            # Commit per window so we don't lose hours of work to a container
+            # restart. Costs a few extra ms but the bake is GPU-bound anyway.
+            prebake_volume.commit()
+            print(
+                f"[prebake] window {window_idx + 1}/{len(anchors)} anchor={anchor} "
+                f"wrote={written_in_window} cumulative_written={total_written} "
+                f"cumulative_skipped={total_skipped}",
+                flush=True,
+            )
+        return {
+            "windows": len(anchors),
+            "window_size": PREBAKE_WINDOW_SIZE,
+            "faces_written": total_written,
+            "faces_skipped_existing": total_skipped,
+        }
 
 
 @app.function(
@@ -261,6 +325,61 @@ def download_weights() -> str:
     urllib.request.urlretrieve(url, weights_path)
     weights_volume.commit()
     return f"downloaded {url} -> {weights_path}"
+
+
+@app.function(
+    image=image,
+    volumes={"/weights": weights_volume, "/lookup": lookup_volume, "/prebake": prebake_volume},
+    secrets=[modal.Secret.from_name("zaruce-secrets")],
+    timeout=4 * 3600,
+)
+def prebake_entrypoint(skip_existing: bool = True) -> dict:
+    """One-shot: pre-render every slot in every window into the prebake volume.
+
+    Run from the CLI after the model is hydrated:
+
+        modal run services/face-generator/main.py::prebake_entrypoint
+
+    With PREBAKE_WINDOW_COUNT=100 and PREBAKE_WINDOW_SIZE=100 this generates
+    10,000 faces in one warm container — paying one GPU cold-start instead
+    of one per face. Subsequent /static-face?slot=<n> requests serve from
+    the volume on a CPU-only function, no GPU billed.
+    """
+    print(
+        f"[prebake_entrypoint] {PREBAKE_WINDOW_COUNT} windows × "
+        f"{PREBAKE_WINDOW_SIZE} faces = {PREBAKE_WINDOW_COUNT * PREBAKE_WINDOW_SIZE} total",
+        flush=True,
+    )
+    return FaceGenerator().prebake_all_windows.remote(skip_existing=skip_existing)
+
+
+@app.function(
+    image=static_image,
+    volumes={"/prebake": prebake_volume},
+    timeout=60,
+    # CPU-only function (no gpu= kwarg). Cheap to run, scales horizontally on
+    # demand; Cloudflare in front caches each (slot) URL for a year.
+)
+@modal.fastapi_endpoint(method="GET", label="static-face")
+def static_face_endpoint(slot: int):
+    """Serve a pre-baked JPEG straight from the prebake volume. Returns 404
+    for slots that aren't in any pre-baked window — the carousel renders
+    a silhouette in that case (see /apps/web/src/pages/index.astro)."""
+    from fastapi import HTTPException
+    from fastapi.responses import Response
+
+    if slot < 0:
+        raise HTTPException(status_code=404, detail="slot out of range")
+    path = f"/prebake/{slot}.jpg"
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="not pre-baked")
+    with open(path, "rb") as fh:
+        body = fh.read()
+    return Response(
+        content=body,
+        media_type="image/jpeg",
+        headers={"cache-control": "public, max-age=31536000, immutable"},
+    )
 
 
 @app.function(

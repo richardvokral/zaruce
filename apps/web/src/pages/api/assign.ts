@@ -1,5 +1,11 @@
 import type { APIRoute } from "astro";
-import { currentTotalSlots, TOTAL_BUCKETS } from "@zaruce/shared";
+import {
+  currentTotalSlots,
+  TOTAL_BUCKETS,
+  prebakeAnchors,
+  randomPrebakeAnchor,
+  randomSlotInWindow,
+} from "@zaruce/shared";
 import { getDb } from "../../server/db";
 import { checkRateLimit } from "../../server/rate-limit";
 import { clientIp, toBytea, visitorHash } from "../../server/visitor";
@@ -34,11 +40,18 @@ export const POST: APIRoute = async ({ request }) => {
   const total = currentTotalSlots();
   const hash = await visitorHash(ip, ua);
 
+  // Bias new assignments into the pre-baked windows so the slot the user
+  // gets back already has a static JPEG sitting in the prebake volume.
+  // We try a handful of slots in one randomly-chosen window first, then
+  // fall back to other windows, then finally to anywhere in the full
+  // range (in the catastrophic case where every window is filled).
   const sql = getDb();
   if (!sql) {
-    // Local dev fallback: no DB, just return a random index.
+    // Local dev fallback: no DB, just return a slot inside a window so the
+    // dev environment also exercises the pre-baked path.
+    const anchor = randomPrebakeAnchor();
     return json({
-      index: randomBigInt(total).toString(),
+      index: randomSlotInWindow(anchor).toString(),
       attributeBucketId: bucketId,
       createdAt: new Date().toISOString(),
     });
@@ -54,11 +67,19 @@ export const POST: APIRoute = async ({ request }) => {
     : null;
   const hashLiteral = toBytea(hash);
 
-  // Try a handful of random indices. At <1% occupancy a collision is rare;
-  // the upper bound just keeps us from spinning forever in the catastrophic
-  // case where someone has filled most of the table.
-  for (let attempt = 0; attempt < 8; attempt++) {
-    const candidate = randomBigInt(total);
+  // Build the sequence of candidate slots: a few attempts in a primary
+  // window, then a few more in other windows, then the full-range fallback.
+  const primaryAnchor = randomPrebakeAnchor();
+  const otherAnchors = shuffle(
+    prebakeAnchors().filter((a) => a !== primaryAnchor),
+  ).slice(0, 4);
+  const candidates: bigint[] = [
+    ...repeat(4, () => randomSlotInWindow(primaryAnchor)),
+    ...otherAnchors.map((a) => randomSlotInWindow(a)),
+    ...repeat(4, () => randomBigInt(total)),
+  ];
+
+  for (const candidate of candidates) {
     try {
       const rows = (await sql`
         INSERT INTO slots (index, visitor_hash, attribute_bucket_id, attributes_purge_at)
@@ -82,6 +103,19 @@ export const POST: APIRoute = async ({ request }) => {
 
   return json({ error: "no_free_slot" }, 503);
 };
+
+function repeat<T>(n: number, fn: () => T): T[] {
+  return Array.from({ length: n }, fn);
+}
+
+function shuffle<T>(arr: readonly T[]): T[] {
+  const out = [...arr];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j]!, out[i]!];
+  }
+  return out;
+}
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
