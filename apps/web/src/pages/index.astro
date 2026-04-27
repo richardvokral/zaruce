@@ -76,6 +76,7 @@ const initialSlot = (initialAnchor + BigInt(Math.floor(PREBAKE_WINDOW_SIZE / 2))
       </div>
 
       <button id="cta" type="button" hidden>find your face</button>
+      <button id="selfie-cta" type="button" hidden>use your selfie</button>
 
       <div id="position" hidden>
         <span class="label">your slot</span>
@@ -97,6 +98,7 @@ const initialSlot = (initialAnchor + BigInt(Math.floor(PREBAKE_WINDOW_SIZE / 2))
           <p>About to send these attributes:</p>
           <ul id="selfie-attrs"></ul>
         </div>
+        <p class="selfie-warning">By pressing this you owe 1$ to Richard.</p>
         <menu>
           <button value="cancel" type="submit">cancel</button>
           <button id="selfie-confirm" value="confirm" type="submit" disabled>
@@ -216,6 +218,30 @@ const initialSlot = (initialAnchor + BigInt(Math.floor(PREBAKE_WINDOW_SIZE / 2))
         letter-spacing: 0.02em;
       }
       #cta:hover { background: var(--accent); }
+
+      #selfie-cta {
+        position: fixed;
+        bottom: 76px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: transparent;
+        color: var(--muted);
+        border: 1px solid #333;
+        padding: 6px 14px;
+        border-radius: 999px;
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
+        letter-spacing: 0.02em;
+      }
+      #selfie-cta:hover { color: var(--fg); border-color: var(--fg); }
+
+      .selfie-warning {
+        color: var(--accent);
+        font-weight: 600;
+        margin-top: 16px;
+        margin-bottom: 0;
+      }
 
       #position {
         position: fixed;

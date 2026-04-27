@@ -28,6 +28,15 @@ if (!dialog || !input || !preview || !attrsList || !confirmBtn) {
 } else {
   let pending: Attributes | null = null;
 
+  // Reveal the "use your selfie" trigger (kept hidden in the SSR'd HTML so
+  // a no-JS visitor doesn't see a button that wouldn't open anything) and
+  // wire it to open the dialog. The rest of the flow is unchanged.
+  const opener = document.getElementById("selfie-cta") as HTMLButtonElement | null;
+  if (opener) {
+    opener.hidden = false;
+    opener.addEventListener("click", () => dialog.showModal());
+  }
+
   input.addEventListener("change", async () => {
     const file = input.files?.[0];
     if (!file) return;
