@@ -110,11 +110,34 @@ def _pick_seed_from_bucket(index: int, seeds: list[int], salt: str) -> int:
 class FaceGenerator:
     @modal.enter()
     def setup(self) -> None:
+        import shutil
+        import subprocess
         import sys
         import torch
         import pickle
 
         sys.path.insert(0, "/opt/stylegan3")
+
+        # Surface the build environment up front so future cold-starts don't
+        # need an extra debug round-trip to figure out what's missing.
+        nvcc = shutil.which("nvcc") or "/usr/local/cuda/bin/nvcc"
+        try:
+            nvcc_version = subprocess.check_output([nvcc, "--version"], text=True).strip()
+        except Exception as e:
+            nvcc_version = f"<nvcc not runnable: {e!r}>"
+        print(f"[setup] torch={torch.__version__} cuda_runtime={torch.version.cuda}", flush=True)
+        print(f"[setup] nvcc path={nvcc}", flush=True)
+        print(f"[setup] nvcc --version:\n{nvcc_version}", flush=True)
+        if torch.cuda.is_available():
+            cap = torch.cuda.get_device_capability(0)
+            name = torch.cuda.get_device_name(0)
+            print(f"[setup] gpu={name} compute_capability={cap[0]}.{cap[1]}", flush=True)
+        else:
+            print("[setup] WARNING: CUDA not available", flush=True)
+
+        # Restrict JIT compile to the GPU arch we actually run on. Without this
+        # nvcc tries every supported arch and can fail on the rare ones.
+        os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "8.0;8.6;8.9;9.0")
 
         weights_path = "/weights/stylegan3-r-ffhq-1024x1024.pkl"
         if not os.path.exists(weights_path):
@@ -131,6 +154,12 @@ class FaceGenerator:
             self.G = pickle.load(fh)["G_ema"].cuda().eval()
         self.device = torch.device("cuda")
 
+        # Pre-warm StyleGAN3's JIT-compiled CUDA plugins WITH verbose output so
+        # any nvcc failure is visible in Modal logs. StyleGAN3's own _init()
+        # swallows the real error behind a bare "Failed!" print, which is what
+        # made the previous debug round so painful.
+        self._warm_plugins()
+
         lookup_path = "/lookup/bucket_seeds.json"
         if os.path.exists(lookup_path):
             with open(lookup_path) as fh:
@@ -140,6 +169,37 @@ class FaceGenerator:
 
         self.salt = os.environ["SEED_SALT"]
         self.resolution = int(os.environ.get("FACE_RESOLUTION", "256"))
+
+    def _warm_plugins(self) -> None:
+        """Force JIT-compile of bias_act / filtered_lrelu / upfirdn2d at
+        container startup, surfacing any compiler error explicitly. After this
+        runs once the .so files are cached under /root/.cache/torch_extensions
+        and subsequent generate() calls reuse them instantly."""
+        from torch.utils import cpp_extension as _ext
+
+        # Wrap torch's loader to force verbose=True so we see nvcc's stderr
+        # in Modal logs even when StyleGAN3 catches the resulting exception.
+        original_load = _ext.load
+        def loud_load(*args, **kwargs):
+            kwargs["verbose"] = True
+            return original_load(*args, **kwargs)
+        _ext.load = loud_load
+
+        try:
+            from torch_utils.ops import bias_act, filtered_lrelu, upfirdn2d  # noqa: F401
+            for label, init in (
+                ("bias_act", bias_act._init),
+                ("filtered_lrelu", filtered_lrelu._init),
+                ("upfirdn2d", upfirdn2d._init),
+            ):
+                print(f"[setup] warming {label}_plugin…", flush=True)
+                ok = init()
+                print(f"[setup] {label}_plugin _init() -> {ok}", flush=True)
+        except Exception as e:
+            print(f"[setup] plugin warm-up failed: {e!r}", flush=True)
+            raise
+        finally:
+            _ext.load = original_load
 
     def _resolve_seed(self, slot_index: int, bucket_id: Optional[int]) -> int:
         if bucket_id is None:
