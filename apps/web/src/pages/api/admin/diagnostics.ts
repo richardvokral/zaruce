@@ -1,5 +1,5 @@
 import type { APIRoute } from "astro";
-import { currentTotalSlots } from "@zaruce/shared";
+import { currentTotalSlots, isPrebaked, prebakeAnchors } from "@zaruce/shared";
 import { getDb } from "../../../server/db";
 
 export const prerender = false;
@@ -126,23 +126,86 @@ async function probeModalAdmin(base: string, token: string, timeoutMs: number) {
  * generic "fetch failed" at the runtime level (SSL/edge timing), which would
  * mask the real config we're trying to inspect.
  */
-function probeFaceRedirect(slot: number, modalFaceBase: string) {
+function probeFaceRedirect(
+  slot: number,
+  modalFaceBase: string,
+  modalStaticFaceBase: string,
+) {
   const total = currentTotalSlots();
   if (slot < 0 || BigInt(slot) >= total) {
     return { ok: false, status: 404, reason: "slot out of range", computed: true };
   }
-  const base = modalFaceBase.replace(/\/$/, "");
-  if (!base) {
-    return { ok: false, status: 503, reason: "MODAL_FACE_BASE not set", computed: true };
+  const inWindow = isPrebaked(BigInt(slot));
+  const staticBase = modalStaticFaceBase.replace(/\/$/, "");
+  const gpuBase = modalFaceBase.replace(/\/$/, "");
+
+  // Mirror /api/face/[id].ts: prefer static for in-window slots when configured.
+  if (inWindow && staticBase) {
+    return {
+      ok: true,
+      status: 302,
+      route: "static",
+      inWindow,
+      location: `${staticBase}/?slot=${slot}`,
+      computed: true,
+    };
+  }
+  if (!gpuBase) {
+    return {
+      ok: false,
+      status: 404,
+      route: inWindow ? "static-but-base-missing" : "gpu-but-base-missing",
+      inWindow,
+      reason: "neither MODAL_STATIC_FACE_BASE (in-window) nor MODAL_FACE_BASE (out-of-window) configured",
+      computed: true,
+    };
   }
   return {
     ok: true,
     status: 302,
-    location: `${base}/?slot=${slot}`,
-    cacheControl: "public, max-age=31536000, immutable",
+    route: "gpu",
+    inWindow,
+    location: `${gpuBase}/?slot=${slot}`,
     computed: true,
-    note: "Computed from MODAL_FACE_BASE + slot (matches /api/face/[id].ts logic). Self-fetch was skipped to avoid Vercel runtime self-call quirks.",
+    note: inWindow
+      ? "MODAL_STATIC_FACE_BASE not set, in-window slot falls through to GPU."
+      : "Slot is outside any pre-baked window; routed to GPU as expected.",
   };
+}
+
+/**
+ * Hit the static_face Modal endpoint with a known in-window slot to verify
+ * the prebake volume actually contains JPEGs. A 404 here is the smoking gun
+ * for "I deployed the prebake routing but never ran prebake_entrypoint".
+ */
+async function probeStaticFace(base: string, timeoutMs: number) {
+  if (!base) return { ok: false, reason: "MODAL_STATIC_FACE_BASE not set", skipped: true };
+  // First slot of the first pre-baked window — guaranteed to exist if prebake ran.
+  const probeSlot = Number(prebakeAnchors()[0]);
+  const url = `${base.replace(/\/$/, "")}/?slot=${probeSlot}`;
+  try {
+    const { res, elapsedMs } = await fetchWithTimeout(url, {}, timeoutMs);
+    const contentType = res.headers.get("content-type") ?? "";
+    let bodySnippet = "";
+    if (!contentType.startsWith("image/")) {
+      try { bodySnippet = (await res.text()).slice(0, 400); } catch { /* */ }
+    }
+    return {
+      ok: res.ok && contentType.startsWith("image/"),
+      url,
+      status: res.status,
+      contentType,
+      contentLength: res.headers.get("content-length") ?? "",
+      elapsedMs,
+      probeSlot,
+      bodySnippet,
+      hint: !res.ok && res.status === 404
+        ? "404 means the prebake volume has no JPEG for this slot — run `modal run services/face-generator/main.py::prebake_entrypoint` from the codespace."
+        : undefined,
+    };
+  } catch (err) {
+    return { ok: false, url, error: (err as Error).message };
+  }
 }
 
 /**
@@ -226,6 +289,7 @@ export const POST: APIRoute = async ({ request, url }) => {
 
   const origin = url.origin;
   const modalFaceBase = env("MODAL_FACE_BASE");
+  const modalStaticFaceBase = env("MODAL_STATIC_FACE_BASE");
   const modalAdminBase = env("MODAL_ADMIN_STATUS_BASE");
 
   const log: StepLog[] = [];
@@ -241,6 +305,7 @@ export const POST: APIRoute = async ({ request, url }) => {
     VISITOR_HASH_KEY: { set: !!env("VISITOR_HASH_KEY"), preview: mask(env("VISITOR_HASH_KEY")) },
     ADMIN_TOKEN: { set: !!env("ADMIN_TOKEN"), preview: mask(env("ADMIN_TOKEN")) },
     MODAL_FACE_BASE: { set: !!modalFaceBase, preview: modalFaceBase || "" },
+    MODAL_STATIC_FACE_BASE: { set: !!modalStaticFaceBase, preview: modalStaticFaceBase || "" },
     MODAL_ADMIN_STATUS_BASE: { set: !!modalAdminBase, preview: modalAdminBase || "" },
     PUBLIC_FACE_BASE: { set: !!env("PUBLIC_FACE_BASE"), preview: env("PUBLIC_FACE_BASE") || "" },
     PUBLIC_API_BASE: { set: !!env("PUBLIC_API_BASE"), preview: env("PUBLIC_API_BASE") || "" },
@@ -249,8 +314,9 @@ export const POST: APIRoute = async ({ request, url }) => {
   // Run probes in parallel but each guarded by its own timeout. Promise.allSettled
   // ensures one probe failing doesn't lose the others.
   const settled = await Promise.allSettled([
-    timed("faceRedirect", async () => probeFaceRedirect(slot, modalFaceBase), log),
+    timed("faceRedirect", async () => probeFaceRedirect(slot, modalFaceBase, modalStaticFaceBase), log),
     timed("modalFace", () => probeModalFace(modalFaceBase, slot, probeTimeoutMs), log),
+    timed("modalStaticFace", () => probeStaticFace(modalStaticFaceBase, probeTimeoutMs), log),
     timed("modalAdmin", () => probeModalAdmin(modalAdminBase, expected, probeTimeoutMs), log),
     timed("db", () => probeDb(probeTimeoutMs), log),
     timed("counter", () => probeCounterLocal(probeTimeoutMs), log),
@@ -269,11 +335,12 @@ export const POST: APIRoute = async ({ request, url }) => {
     env: envFlags,
     faceRedirect: get(0, { ok: false, error: "probe crashed" }),
     modalFace: get(1, { ok: false, error: "probe crashed" }),
-    modalAdmin: get(2, { ok: false, error: "probe crashed" }),
-    db: get(3, { ok: false, error: "probe crashed" }),
-    counter: get(4, { ok: false, error: "probe crashed" }),
+    modalStaticFace: get(2, { ok: false, error: "probe crashed" }),
+    modalAdmin: get(3, { ok: false, error: "probe crashed" }),
+    db: get(4, { ok: false, error: "probe crashed" }),
+    counter: get(5, { ok: false, error: "probe crashed" }),
     log,
-    note: "Set MODAL_ADMIN_STATUS_BASE in Vercel to enable the Modal admin probe (e.g. https://richard-vokral--admin-status.modal.run). Pass {modalTimeoutMs: 30000} in the request body to give Modal cold-starts more time.",
+    note: "If modalStaticFace is 404, the prebake volume is empty — run `modal run services/face-generator/main.py::prebake_entrypoint` from the codespace. Pass {modalTimeoutMs: 30000} in the request body to give Modal cold-starts more time.",
   };
 
   console.log(`[admin/diagnostics] done in ${result.totalElapsedMs}ms`, log);
