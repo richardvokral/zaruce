@@ -163,7 +163,7 @@ async function probeCounterLocal(timeoutMs: number) {
   const start = Date.now();
   try {
     const rows = await Promise.race([
-      sql`SELECT occupied FROM slot_counter WHERE id = 1` as Promise<Array<{ occupied: string }>>,
+      sql`SELECT occupied FROM slot_counter WHERE id = 1` as unknown as Promise<Array<{ occupied: string }>>,
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error(`counter query timeout after ${timeoutMs}ms`)), timeoutMs),
       ),
@@ -185,7 +185,7 @@ async function probeDb(timeoutMs: number) {
   const start = Date.now();
   try {
     const result = await Promise.race([
-      sql`SELECT 1 AS one` as Promise<Array<{ one: number }>>,
+      sql`SELECT 1 AS one` as unknown as Promise<Array<{ one: number }>>,
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error(`db timeout after ${timeoutMs}ms`)), timeoutMs),
       ),

@@ -121,7 +121,7 @@ const title = "zaruce admin diagnostics";
       <pre id="raw" class="muted">awaiting first run.</pre>
     </main>
 
-    <script type="module">
+    <script is:inline>
       const $ = (id) => document.getElementById(id);
       const tokenEl = $("token");
       const slotEl = $("slot");
@@ -148,12 +148,6 @@ const title = "zaruce admin diagnostics";
         tokenEl.value = "";
         tokenEl.focus();
       });
-
-      function badge(ok, label) {
-        const cls = ok ? "ok" : "fail";
-        const sym = ok ? "✓" : "✗";
-        return `<span class="${cls}">${sym} ${label}</span>`;
-      }
 
       function renderSummary(data) {
         const rows = [];
