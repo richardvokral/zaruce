@@ -36,7 +36,14 @@ WEIGHTS_VOLUME = "zaruce-stylegan-weights"
 LOOKUP_VOLUME = "zaruce-bucket-lookup"
 
 image = (
-    modal.Image.debian_slim(python_version="3.11")
+    # StyleGAN3's bias_act / filtered_lrelu / upfirdn2d ops are JIT-compiled
+    # CUDA extensions, so the image needs the full CUDA toolchain (nvcc +
+    # headers), not just the runtime libs that ship inside the torch wheel.
+    # Pin to 12.1.1-devel to match torch==2.4.0's cu121 build.
+    modal.Image.from_registry(
+        "nvidia/cuda:12.1.1-devel-ubuntu22.04",
+        add_python="3.11",
+    )
     .apt_install("git", "build-essential", "libgl1", "libglib2.0-0")
     .pip_install(
         "torch==2.4.0",
